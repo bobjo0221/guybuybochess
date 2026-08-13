@@ -268,6 +268,7 @@
         <li>틀린 팀은 아이템 획득도, 사용도 할 수 없고 <b style="color:var(--text)">그냥 말 이동만</b> 가능합니다.</li>
         <li>아이템: <b style="color:var(--text)">밀기</b>(이동 칸 +1), <b style="color:var(--text)">회전</b>(제자리에서 90도 돌려 새 면으로 이동), <b style="color:var(--text)">가감</b>(이동 칸 ±1).</li>
         <li>이동을 마쳤을 때 <b style="color:var(--text)">상하좌우로 맞닿은 칸에 상대 말이 있으면</b> 가위바위보 대결이 벌어집니다 (한 번에 여러 상대와 맞닿으면 순서대로 모두 대결). 이긴 쪽이 2점을 얻고 진 말은 제거되며, 비기면 둘 다 자리를 지킵니다.</li>
+        <li>이동 중 클릭을 잘못했다면 <b style="color:var(--text)">↩️ 한 칸 무르기</b> 버튼으로 직전 스텝을 되돌릴 수 있어요 (여러 번 눌러 처음 위치까지도 되돌릴 수 있음).</li>
         <li>퀴즈가 모두 끝나거나 한 팀의 말이 모두 사라지면 게임이 종료되며, 점수가 높은 팀이 승리합니다 (동점이면 퀴즈 정답 수로 판정).</li>
       </ul>
     </div>
@@ -365,17 +366,22 @@
   // both paper, front & back are both rock. So a die is really just an
   // assignment of the 3 shapes to the 3 axis-pairs (top/bottom, north/south,
   // east/west), not 6 independently random faces.
+  //
+  // Which shape sits on the west/east axis is fixed by the top face
+  // (confirmed from the actual piece set): 가위 top → 바위 west,
+  // 바위 top → 가위 west, 보 top → 가위 west. Whatever's left goes on north/south.
+  const WEST_FOR_TOP = { '가위':'바위', '바위':'가위', '보':'가위' };
   function makeDieWithTop(topFace){
-    const others = shuffle(['가위','바위','보'].filter(s=>s!==topFace));
-    const [axisB, axisC] = others;
-    return { top:topFace, bottom:topFace, north:axisB, south:axisB, east:axisC, west:axisC };
+    const westFace = WEST_FOR_TOP[topFace];
+    const thirdFace = ['가위','바위','보'].find(s=>s!==topFace && s!==westFace);
+    return { top:topFace, bottom:topFace, east:westFace, west:westFace, north:thirdFace, south:thirdFace };
   }
 
   // Same net rule, but with a random starting top face (used when no fixed
   // starting orientation is required).
   function makeDie(){
     const shapes = shuffle(['가위','바위','보']);
-    return { top:shapes[0], bottom:shapes[0], north:shapes[1], south:shapes[1], east:shapes[2], west:shapes[2] };
+    return makeDieWithTop(shapes[0]);
   }
 
   function rollDie(o, dir){
@@ -575,7 +581,7 @@
     }
 
     const steps = stepsForDie(piece.die, modifier);
-    state.movement = { pieceId: piece.id, remaining: steps, prevPos: null, startPos:{row:piece.row,col:piece.col} };
+    state.movement = { pieceId: piece.id, remaining: steps, prevPos: null, startPos:{row:piece.row,col:piece.col}, history: [] };
     const modText = modifier ? (modifier.type==='push' ? ' (밀기 적용: +1칸)' : ` (가감 적용: ${modifier.delta>0?'+1':'-1'}칸)`) : '';
     log(`${labelFor(PLAYER_TEAM)} ${piece.id} 말 이동 시작 — 총 ${steps}칸${modText}`, PLAYER_TEAM);
     state.phase = 'moving';
@@ -586,7 +592,7 @@
     const piece = state.pieces.find(p=>p.id===state.selectedPieceId);
     piece.die = rollDie(piece.die, dir);
     const steps = stepsForDie(piece.die, null);
-    state.movement = { pieceId: piece.id, remaining: steps, prevPos: null, startPos:{row:piece.row,col:piece.col} };
+    state.movement = { pieceId: piece.id, remaining: steps, prevPos: null, startPos:{row:piece.row,col:piece.col}, history: [] };
     log(`${labelFor(PLAYER_TEAM)} ${piece.id} 말을 제자리에서 회전 — 새 윗면 ${FACE_EMOJI[piece.die.top]} ${piece.die.top}, 총 ${steps}칸 이동`, PLAYER_TEAM);
     state.phase = 'moving';
     render();
@@ -601,6 +607,12 @@
 
   function doStep(row,col,dir){
     const piece = state.pieces.find(p=>p.id===state.movement.pieceId);
+    // Snapshot state before this step so it can be undone (무르기).
+    state.movement.history.push({
+      row: piece.row, col: piece.col, die: {...piece.die},
+      remaining: state.movement.remaining,
+      prevPos: state.movement.prevPos ? {...state.movement.prevPos} : null,
+    });
     const prev = { row:piece.row, col:piece.col };
     piece.die = rollDie(piece.die, dir);
     piece.row = row; piece.col = col;
@@ -623,6 +635,21 @@
     }
     // final step landed
     resolveLanding(piece);
+  }
+
+  // Undo the most recent step during an in-progress move (repeatable —
+  // clicking it several times walks all the way back to the start square).
+  function undoLastStep(){
+    if(!state.movement || state.movement.history.length===0) return;
+    const snap = state.movement.history.pop();
+    const piece = state.pieces.find(p=>p.id===state.movement.pieceId);
+    piece.row = snap.row;
+    piece.col = snap.col;
+    piece.die = snap.die;
+    state.movement.remaining = snap.remaining;
+    state.movement.prevPos = snap.prevPos;
+    log(`${labelFor(PLAYER_TEAM)} ${piece.id} 말 이동을 한 칸 무릅니다. (남은 ${state.movement.remaining}칸)`, PLAYER_TEAM);
+    render();
   }
 
   // Dice can't overlap, so a move always ends on an empty square. Instead,
@@ -761,7 +788,7 @@
     piece.die = rollDie(piece.die, dir);
     log(`&nbsp;&nbsp;↳ ${piece.id} ${DIR_LABEL[dir]}로 한 칸 (${idx+1}/${pathDirs.length}) — 윗면 ${FACE_EMOJI[piece.die.top]} ${piece.die.top}`, AI_TEAM);
     render();
-    setTimeout(()=> animateComputerPath(piece, pathDirs, idx+1, onFinished), 260);
+    setTimeout(()=> animateComputerPath(piece, pathDirs, idx+1, onFinished), 500);
   }
 
   function executeComputerMove(best, onDone){
@@ -1084,11 +1111,17 @@
     if(ph === 'moving'){
       if(!state.movement){ return; } // defensive: avoid crashing if phase/state ever get out of sync
       const piece = state.pieces.find(p=>p.id===state.movement.pieceId);
+      const canUndo = state.movement.history.length > 0;
       panel.innerHTML = `
         <div class="card-title">🎲 ${piece.id} 이동 중</div>
         <div class="result-box">남은 칸 수: <b>${state.movement.remaining}</b><br>현재 윗면: <b>${FACE_EMOJI[piece.die.top]} ${piece.die.top}</b></div>
         <div class="hint">보드에서 금색으로 빛나는 칸을 클릭해 한 칸씩 이동하세요. 직전 칸으로는 되돌아갈 수 없습니다.</div>
+        <div class="action-row" style="margin-top:10px;">
+          <button class="btn-ghost" id="undoBtn" style="flex:1; ${canUndo?'':'opacity:.4; cursor:not-allowed;'}" ${canUndo?'':'disabled'}>↩️ 한 칸 무르기</button>
+        </div>
       `;
+      const undoBtn = document.getElementById('undoBtn');
+      if(canUndo) undoBtn.addEventListener('click', undoLastStep);
       return;
     }
 
