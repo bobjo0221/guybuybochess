@@ -742,14 +742,33 @@
     return best;
   }
 
-  function executeComputerMove(best){
+  const DIR_LABEL = { N:'위', S:'아래', E:'오른쪽', W:'왼쪽' };
+  const DIR_DELTA = { N:[-1,0], S:[1,0], E:[0,1], W:[0,-1] };
+
+  // Steps the piece through its computed path one square at a time (with a
+  // short delay between steps) so the board visibly shows the route taken
+  // and how the top face changes along the way, instead of teleporting.
+  function animateComputerPath(piece, pathDirs, idx, onFinished){
+    if(idx >= pathDirs.length){
+      resolveAdjacentBattles(piece);
+      onFinished();
+      return;
+    }
+    const dir = pathDirs[idx];
+    const [dr,dc] = DIR_DELTA[dir];
+    piece.row += dr;
+    piece.col += dc;
+    piece.die = rollDie(piece.die, dir);
+    log(`&nbsp;&nbsp;↳ ${piece.id} ${DIR_LABEL[dir]}로 한 칸 (${idx+1}/${pathDirs.length}) — 윗면 ${FACE_EMOJI[piece.die.top]} ${piece.die.top}`, AI_TEAM);
+    render();
+    setTimeout(()=> animateComputerPath(piece, pathDirs, idx+1, onFinished), 260);
+  }
+
+  function executeComputerMove(best, onDone){
     const piece = best.piece;
     const dest = best.dest;
-    piece.row = dest.row;
-    piece.col = dest.col;
-    piece.die = dest.orientation;
-    log(`${labelFor(AI_TEAM)} ${piece.id} 말이 이동했습니다. (윗면: ${FACE_EMOJI[piece.die.top]} ${piece.die.top})`, AI_TEAM);
-    resolveAdjacentBattles(piece);
+    log(`${labelFor(AI_TEAM)} ${piece.id} 말 이동 시작 — 총 ${dest.pathDirs.length}칸 (현재 윗면 ${FACE_EMOJI[piece.die.top]} ${piece.die.top})`, AI_TEAM);
+    animateComputerPath(piece, dest.pathDirs, 0, onDone);
   }
 
   function computerAct(){
@@ -766,9 +785,10 @@
       if(itemBest && itemBest.delta!==0 && (!plainBest || itemBest.score > plainBest.score + 3)){
         items.adjust -= 1;
         log(`${labelFor(AI_TEAM)}가 <b>[가감]</b> 아이템을 사용했습니다. (${itemBest.delta>0?'+1':'-1'}칸)`, AI_TEAM);
-        executeComputerMove(itemBest);
-        if(checkWipeout()) return;
-        finishComputerTurn();
+        executeComputerMove(itemBest, ()=>{
+          if(checkWipeout()) return;
+          finishComputerTurn();
+        });
         return;
       }
       // Branch 2: get a new item, then move plainly (can't use the new item this turn)
@@ -778,12 +798,14 @@
       const names = {push:'밀기', rotate:'회전', adjust:'가감'};
       log(`${labelFor(AI_TEAM)}가 <b>[${names[t]}]</b> 아이템을 획득했습니다. (이번 이동에는 사용 불가)`, AI_TEAM);
       if(plainBest){
-        executeComputerMove(plainBest);
+        executeComputerMove(plainBest, ()=>{
+          if(checkWipeout()) return;
+          finishComputerTurn();
+        });
       } else {
         log(`${labelFor(AI_TEAM)}가 이동할 수 있는 말이 없어 이번 이동은 건너뜁니다.`, AI_TEAM);
+        finishComputerTurn();
       }
-      if(checkWipeout()) return;
-      finishComputerTurn();
       return;
     }
 
@@ -793,9 +815,10 @@
       finishComputerTurn();
       return;
     }
-    executeComputerMove(plainBest);
-    if(checkWipeout()) return;
-    finishComputerTurn();
+    executeComputerMove(plainBest, ()=>{
+      if(checkWipeout()) return;
+      finishComputerTurn();
+    });
   }
 
   function finishComputerTurn(){
